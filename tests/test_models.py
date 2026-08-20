@@ -38,6 +38,8 @@ from custom_components.govee.models.device import (
     INSTANCE_WORK_MODE,
     INSTANCE_HDMI_SOURCE,
     INSTANCE_DREAMVIEW,
+    INSTANCE_MAIN_LIGHT_TOGGLE,
+    INSTANCE_BACKGROUND_LIGHT_TOGGLE,
 )
 from dataclasses import dataclass
 
@@ -421,6 +423,46 @@ class TestGoveeDevice:
         """Test that GoveeDevice is immutable (frozen)."""
         with pytest.raises(AttributeError):
             mock_light_device.name = "New Name"
+
+    # --- named_light_toggle_instances / BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS ---
+
+    def _make_ceiling_light_pro(self, sku: str) -> GoveeDevice:
+        return GoveeDevice(
+            device_id="11:66:C0:EB:32:C1:19:FC",
+            sku=sku,
+            name="Ceiling Light",
+            device_type="devices.types.light",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_TOGGLE,
+                    instance=INSTANCE_MAIN_LIGHT_TOGGLE,
+                    parameters={},
+                ),
+                GoveeCapability(
+                    type=CAPABILITY_TOGGLE,
+                    instance=INSTANCE_BACKGROUND_LIGHT_TOGGLE,
+                    parameters={},
+                ),
+            ),
+            is_group=False,
+        )
+
+    def test_named_light_toggles_include_background_by_default(self):
+        """A SKU not in the broken list keeps both toggles (e.g. H1310/H1370)."""
+        device = self._make_ceiling_light_pro("H1310")
+        assert device.named_light_toggle_instances == [
+            INSTANCE_MAIN_LIGHT_TOGGLE,
+            INSTANCE_BACKGROUND_LIGHT_TOGGLE,
+        ]
+
+    def test_named_light_toggles_drop_background_on_broken_skus(self):
+        """A confirmed-dead backgroundLightToggle SKU (#131) loses only that toggle."""
+        device = self._make_ceiling_light_pro("H1270")
+        assert device.named_light_toggle_instances == [INSTANCE_MAIN_LIGHT_TOGGLE]
+
+    def test_named_light_toggles_sku_match_is_case_insensitive(self):
+        device = self._make_ceiling_light_pro("h1270")
+        assert device.named_light_toggle_instances == [INSTANCE_MAIN_LIGHT_TOGGLE]
 
 
 # ==============================================================================

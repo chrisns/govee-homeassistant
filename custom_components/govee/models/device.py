@@ -180,6 +180,13 @@ INSTANCE_CO2 = "carbonDioxideConcentration"
 INSTANCE_MAIN_LIGHT_TOGGLE = "mainLightToggle"
 INSTANCE_BACKGROUND_LIGHT_TOGGLE = "backgroundLightToggle"
 
+# Ceiling Light Pro SKUs whose backgroundLightToggle capability is present but
+# confirmed non-functional via the cloud API in both directions — the API
+# always reports success, the fixture never physically responds (issue #131).
+# These SKUs also expose RGBIC segments covering the same physical zone (the
+# ring), which do work, so the dead switch is suppressed rather than shipped.
+BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS = frozenset({"H1250", "H60A6", "H1270"})
+
 # Device type for stand-alone temperature/humidity sensors.
 DEVICE_TYPE_THERMOMETER = "devices.types.thermometer"
 
@@ -440,13 +447,19 @@ class GoveeDevice:
         lowercase-prefix pattern deliberately excludes ``nightlightToggle``
         (lowercase l — a mode, not a light part) and the numeric
         ``light{N}Toggle`` zones, which have their own property. Returns
-        instance names in capability order.
+        instance names in capability order, minus ``backgroundLightToggle``
+        on the confirmed-dead SKUs in ``BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS``
+        (issue #131) — segments already control that zone on those SKUs.
         """
         pattern = re.compile(r"[a-z]+LightToggle")
         return [
             cap.instance
             for cap in self.capabilities
             if cap.type == CAPABILITY_TOGGLE and pattern.fullmatch(cap.instance)
+            if not (
+                cap.instance == INSTANCE_BACKGROUND_LIGHT_TOGGLE
+                and self.sku.upper() in BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS
+            )
         ]
 
     @property
