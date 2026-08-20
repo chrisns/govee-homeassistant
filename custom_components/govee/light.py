@@ -33,6 +33,8 @@ from .const import (
     CONF_ENABLE_SCENES,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_SEGMENT_MODE,
+    MAIN_LIGHT_LAN_TOGGLE_SKUS,
+    SEGMENT_MODE_BOTH,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
 )
@@ -50,6 +52,8 @@ from .models import (
 )
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
+from .platforms.main_light import GoveeMainLightEntity
+from .platforms.main_segments_group import GoveeMainSegmentsGroupEntity
 from .platforms.segment import GoveeSegmentEntity
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,7 +86,18 @@ async def async_setup_entry(
         # platforms. Without this filter, e.g. an H7150 dehumidifier would
         # appear as a light bulb (issue #54).
         if device.is_light_device and device.supports_power:
-            entities.append(GoveeLightEntity(coordinator, device, enable_scenes))
+            if device.sku.upper() in MAIN_LIGHT_LAN_TOGGLE_SKUS:
+                # powerSwitch=0 on these SKUs puts the fixture into a state
+                # where any later segment command silently also wakes the
+                # main panel — real firmware coupling, not fixable by
+                # sending powerSwitch differently (issue #131/#164 follow-
+                # up). Skip the plain powerSwitch-backed GoveeLightEntity
+                # entirely: independent main control + a coupling-free
+                # "everything" convenience replace it.
+                entities.append(GoveeMainLightEntity(coordinator, device))
+                entities.append(GoveeMainSegmentsGroupEntity(coordinator, device))
+            else:
+                entities.append(GoveeLightEntity(coordinator, device, enable_scenes))
 
         # Appliances whose only light is the nightlight (e.g. H5089 outlet
         # extender, H7124 purifier) get a dedicated nightlight light entity —

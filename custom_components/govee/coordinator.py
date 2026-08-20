@@ -78,6 +78,7 @@ from .const import (
     LAN_WRITE_CONFIRM_TIMEOUT,
     LAN_WRITE_SUPPRESS_SECONDS,
     LAN_WRITE_SUPPRESS_THRESHOLD,
+    MAIN_LIGHT_LAN_TOGGLE_PTREAL_COMMAND,
     MAX_WATER_DETECTOR_POLL_INTERVAL,
     MIN_WATER_DETECTOR_POLL_INTERVAL,
     OPTIMISTIC_GRACE_CAP_SECONDS,
@@ -807,6 +808,34 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         Segment entities use this to avoid racing with a concurrent power-off.
         """
         return device_id in self._pending_power_off
+
+    async def async_send_main_light_toggle(self, device_id: str) -> bool:
+        """Send the reverse-engineered main-light LAN toggle (issue #164).
+
+        Only path that controls the Ceiling Light Pro's main downlight
+        independently of the ring/segments (MAIN_LIGHT_LAN_TOGGLE_SKUS) — the
+        cloud ``mainLightToggle``/``powerSwitch`` capabilities either never
+        work or drag the ring along with them. Requires LAN to be up for this
+        specific device (a ``device_id=ip[!]`` ``CONF_LAN_TARGETS`` entry);
+        with no LAN client or no correlated IP this is a no-op returning
+        ``False``, exactly like the other LAN write paths degrading to "not
+        available" rather than raising.
+
+        It is a blind TOGGLE, not a set-on/set-off — callers are responsible
+        for only invoking this when a real state transition is wanted (their
+        own tracked optimistic state says a flip is needed), never on every
+        ``async_turn_on``/``async_turn_off`` unconditionally.
+        """
+        if self._lan_client is None:
+            return False
+        info = self._lan_devices.get(device_id)
+        if info is None:
+            return False
+        return await self._lan_client.async_send_command(
+            info.ip,
+            "ptReal",
+            {"command": [MAIN_LIGHT_LAN_TOGGLE_PTREAL_COMMAND]},
+        )
 
     # ------------------------------------------------------------------ #
     # BLE direct transport
