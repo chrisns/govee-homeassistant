@@ -119,7 +119,11 @@ async def async_setup_entry(
                 device.segment_count,
             )
 
-            if segment_mode == SEGMENT_MODE_GROUPED:
+            # SEGMENT_MODE_BOTH creates every entity SEGMENT_MODE_GROUPED and
+            # SEGMENT_MODE_INDIVIDUAL would create on their own — the grouped
+            # entity is a convenience "all segments" light layered on top,
+            # never a replacement for the individual per-segment entities.
+            if segment_mode in (SEGMENT_MODE_GROUPED, SEGMENT_MODE_BOTH):
                 _LOGGER.debug(
                     "Creating grouped segment entity for %s",
                     device.name,
@@ -130,7 +134,7 @@ async def async_setup_entry(
                         device=device,
                     )
                 )
-            elif segment_mode == SEGMENT_MODE_INDIVIDUAL:
+            if segment_mode in (SEGMENT_MODE_INDIVIDUAL, SEGMENT_MODE_BOTH):
                 _LOGGER.debug(
                     "Creating %d individual segment entities for %s",
                     device.segment_count,

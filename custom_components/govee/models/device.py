@@ -12,6 +12,8 @@ from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
 
+from ..const import MAIN_LIGHT_LAN_TOGGLE_SKUS
+
 _LOGGER = logging.getLogger(__name__)
 
 # Leak sensor SKUs
@@ -449,7 +451,11 @@ class GoveeDevice:
         ``light{N}Toggle`` zones, which have their own property. Returns
         instance names in capability order, minus ``backgroundLightToggle``
         on the confirmed-dead SKUs in ``BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS``
-        (issue #131) — segments already control that zone on those SKUs.
+        (issue #131) — segments already control that zone on those SKUs —
+        and minus ``mainLightToggle`` on ``MAIN_LIGHT_LAN_TOGGLE_SKUS``
+        (issue #131/#164 follow-up), where ``light.py`` builds a real,
+        independently-working ``GoveeMainLightEntity`` off the LAN ptReal
+        toggle instead of a switch backed by the same dead cloud capability.
         """
         pattern = re.compile(r"[a-z]+LightToggle")
         return [
@@ -459,6 +465,10 @@ class GoveeDevice:
             if not (
                 cap.instance == INSTANCE_BACKGROUND_LIGHT_TOGGLE
                 and self.sku.upper() in BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS
+            )
+            if not (
+                cap.instance == INSTANCE_MAIN_LIGHT_TOGGLE
+                and self.sku.upper() in MAIN_LIGHT_LAN_TOGGLE_SKUS
             )
         ]
 
