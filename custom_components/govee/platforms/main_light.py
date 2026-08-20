@@ -1,10 +1,27 @@
 """Independent "main downlight" light entity for Ceiling Light Pro devices.
 
-Issue #131/#164 follow-up: on MAIN_LIGHT_LAN_TOGGLE_SKUS, neither the cloud
-``mainLightToggle`` capability nor the master ``powerSwitch`` reliably
-control the main panel independently of the ring/segments — see
-``coordinator.async_send_main_light_toggle`` for the full story. This module
-is the payoff: a real light entity backed by the one command that does work.
+Issue #131/#164 follow-up: on MAIN_LIGHT_TOGGLE_SKUS, neither the cloud
+``mainLightToggle`` capability nor the master ``powerSwitch`` control the main
+panel independently of the ring/segments — ``mainLightToggle`` is confirmed
+dead (issue #131), and ``powerSwitch=0`` kills the segments too (confirmed
+live: turning segments on while powered off wakes main as a side effect, and
+powering off while segments are on kills them too — it is a whole-device
+switch, not a per-zone one).
+
+A reverse-engineered ptReal command that toggles ONLY the main panel was
+found and confirmed working when sent by the real Govee app (byte-for-byte
+captured twice, live, cleanly correlated to real button presses) — but every
+attempt to send those exact bytes from this integration (LAN, MQTT, several
+envelope variations matching docs/govee-protocol-reference.md exactly) had
+zero physical effect despite the device acking receipt. Root cause
+undetermined; parked pending a packet capture of the app's real session.
+
+This module instead drives the main panel via ``BrightnessCommand`` alone,
+never ``powerSwitch``: "off" dims to the device's minimum brightness, "on"
+restores it. This is a REAL, already-proven-reliable REST command, confirmed
+live to dim only the main panel while segments — which have their own
+independent brightness/colour — are untouched. On/off state is read directly
+from the device's real reported brightness, not tracked optimistically.
 """
 
 from __future__ import annotations
@@ -22,11 +39,9 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
     ColorMode,
     LightEntity,
 )
-from homeassistant.core import callback
-from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..const import DOMAIN, SUFFIX_MAIN_LIGHT_LAN
+from ..const import SUFFIX_MAIN_LIGHT_TOGGLE
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import BrightnessCommand, ColorCommand, ColorTempCommand, GoveeDevice, RGBColor
@@ -42,29 +57,15 @@ PARALLEL_UPDATES = 0
 _HA_BRIGHTNESS_MAX = 255
 
 
-def main_light_optimistic_signal(device_id: str) -> str:
-    """Per-device dispatcher signal carrying the main light's last write.
-
-    GoveeMainSegmentsGroupEntity listens on this (alongside the segments'
-    equivalent signal) so it knows, without ever guessing, whether the main
-    panel is already in the state its own turn_on/turn_off wants — needed
-    because the underlying LAN command is a blind toggle, not a set.
-    """
-    return f"{DOMAIN}_main_light_optimistic_{device_id}"
-
-
 class GoveeMainLightEntity(GoveeEntity, LightEntity, RestoreEntity):
-    """The Ceiling Light Pro's main downlight, controlled independently.
+    """The Ceiling Light Pro's main downlight, dimmed independently.
 
-    On/off is a purely optimistic, RestoreEntity-persisted local flag — the
-    LAN command is a blind toggle with no readback, so this entity (like
-    the segment entities, for the same underlying reason: Govee reports no
-    real state for this) is the only source of truth for "is main on".
-    Brightness and colour temperature are NOT optimistic: they still go
-    through the existing cloud BrightnessCommand/ColorTempCommand/
-    ColorCommand path, which reports real values back via
-    coordinator.get_state() same as it always has for this device — only the
-    on/off transition was ever broken.
+    On/off is derived from the device's REAL reported brightness (at/below
+    the device's minimum reads as off) — not optimistic, since brightness is
+    a normal polled/reported value for this device, unlike the blind ptReal
+    toggle this replaced. Only ``_last_on_brightness`` (what to restore to on
+    the next turn_on) is RestoreEntity-persisted, as a nice-to-have across
+    restarts, not as the source of truth for is_on.
     """
 
     _attr_translation_key = "govee_main_light_lan"
@@ -72,7 +73,7 @@ class GoveeMainLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
         """Initialize the main light entity."""
         super().__init__(coordinator, device)
-        self._attr_unique_id = f"{device.device_id}{SUFFIX_MAIN_LIGHT_LAN}"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_MAIN_LIGHT_TOGGLE}"
         self._attr_translation_placeholders = {"device_name": device.name}
 
         modes: set[ColorMode] = set()
@@ -87,9 +88,7 @@ class GoveeMainLightEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._attr_supported_color_modes = modes
 
         self._brightness_min, self._brightness_max = device.brightness_range
-
-        # Optimistic on/off — see class docstring.
-        self._is_on = True
+        self._last_on_brightness = self._brightness_max
 
     def _ha_to_device_brightness(self, ha_brightness: int) -> int:
         ratio = ha_brightness / _HA_BRIGHTNESS_MAX
@@ -126,8 +125,11 @@ class GoveeMainLightEntity(GoveeEntity, LightEntity, RestoreEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True if the main panel is on (optimistic, see class docstring)."""
-        return self._is_on
+        """Return True if the device's real brightness is above the device minimum."""
+        state = self.device_state
+        if state is None:
+            return False
+        return state.brightness > self._brightness_min
 
     @property
     def brightness(self) -> int | None:
@@ -159,39 +161,8 @@ class GoveeMainLightEntity(GoveeEntity, LightEntity, RestoreEntity):
         temp_range = self._device.color_temp_range
         return temp_range.max_kelvin if temp_range else 9000
 
-    async def _async_toggle_if_needed(self, want_on: bool) -> None:
-        """Send the LAN toggle only when the tracked state actually needs to flip.
-
-        The command is a blind toggle — sending it when already in the wanted
-        state would flip it the WRONG way, not confirm it.
-        """
-        if self._is_on == want_on:
-            return
-        sent = await self.coordinator.async_send_main_light_toggle(self._device_id)
-        if not sent:
-            _LOGGER.warning(
-                "Main light LAN toggle failed for %s (%s) — is CONF_LAN_TARGETS "
-                "set to '%s=<ip>!' for this device?",
-                self._device.name,
-                self._device_id,
-                self._device_id,
-            )
-            return
-        self._is_on = want_on
-        self.async_write_ha_state()
-        async_dispatcher_send(
-            self.hass, main_light_optimistic_signal(self._device_id), self._is_on
-        )
-
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the main panel on, optionally adjusting brightness/colour."""
-        if ATTR_BRIGHTNESS in kwargs:
-            device_brightness = self._ha_to_device_brightness(kwargs[ATTR_BRIGHTNESS])
-            if not await self.coordinator.async_control_device(
-                self._device_id, BrightnessCommand(brightness=device_brightness)
-            ):
-                _LOGGER.warning("Brightness command failed for %s", self._device_id)
-
         if ATTR_RGB_COLOR in kwargs:
             r, g, b = kwargs[ATTR_RGB_COLOR]
             if not await self.coordinator.async_control_device(
@@ -205,15 +176,40 @@ class GoveeMainLightEntity(GoveeEntity, LightEntity, RestoreEntity):
             ):
                 _LOGGER.warning("Color temp command failed for %s", self._device_id)
 
-        await self._async_toggle_if_needed(want_on=True)
+        if ATTR_BRIGHTNESS in kwargs:
+            target = self._ha_to_device_brightness(kwargs[ATTR_BRIGHTNESS])
+        else:
+            target = self._last_on_brightness
+        if target <= self._brightness_min:
+            target = self._brightness_max
+
+        if not await self.coordinator.async_control_device(
+            self._device_id, BrightnessCommand(brightness=target)
+        ):
+            _LOGGER.warning("Brightness command failed for %s", self._device_id)
+            return
+        self._last_on_brightness = target
+        self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn the main panel off."""
-        await self._async_toggle_if_needed(want_on=False)
+        """Dim the main panel to the device's minimum brightness."""
+        state = self.device_state
+        if state and state.brightness > self._brightness_min:
+            self._last_on_brightness = state.brightness
+
+        if not await self.coordinator.async_control_device(
+            self._device_id, BrightnessCommand(brightness=self._brightness_min)
+        ):
+            _LOGGER.warning("Brightness command failed for %s", self._device_id)
+            return
+        self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Restore previous optimistic on/off state."""
+        """Restore the last non-off brightness to return to on turn_on."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
-        if last_state:
-            self._is_on = last_state.state == "on"
+        if last_state and last_state.attributes.get("brightness"):
+            ha_brightness = last_state.attributes["brightness"]
+            device_brightness = self._ha_to_device_brightness(ha_brightness)
+            if device_brightness > self._brightness_min:
+                self._last_on_brightness = device_brightness

@@ -194,32 +194,44 @@ LAN_STALE_SECONDS: Final = 90
 # LAN_RESCAN_INTERVAL so a correlation stays valid across a full rescan cycle.
 LAN_CORRELATION_TTL_SECONDS: Final = 600
 
-# Reverse-engineered LAN ptReal command that toggles the "main" downlight
-# zone independently of the ring/segments on Ceiling Light Pro devices —
-# confirmed on H1270 only (issue #131/#164 follow-up). Captured from a live
-# MQTT trace of the official Govee app issuing the command over its own
-# cloud-connected session (not BLE — while the app was BLE-paired to the
-# device, this command never appeared over MQTT at all, so it may be a
-# BLE-only "raw passthrough" replay rather than a distinct main-light verb).
-# Replayed independently over LAN and confirmed to toggle ONLY the main
-# panel, leaving the ring/segments untouched, in both directions, repeatedly
-# — real independent zone control, which no other command surface achieves.
-# It is a blind TOGGLE (flip whichever state the panel is currently in), not
-# a set-on/set-off — the app sends the identical bytes for both directions.
-# Byte layout: 33 30 00 [16 zero bytes] 03 — 0x30 is an undocumented command
-# type not in docs/govee-protocol-reference.md's BLE command table; the
-# trailing byte is the XOR checksum over the preceding 19 bytes.
-MAIN_LIGHT_LAN_TOGGLE_PTREAL_COMMAND: Final = "MzAAAAAAAAAAAAAAAAAAAAAAAAM="
+# UNUSED — parked (issue #131/#164 follow-up). A reverse-engineered ptReal
+# command that toggles the "main" downlight zone independently of the ring/
+# segments on Ceiling Light Pro devices, confirmed on H1270 only. Captured
+# TWICE, live, byte-for-byte identical both times, cleanly correlated to real
+# Main Light button presses in the official Govee app (not BLE — while the
+# app was BLE-paired to the device, this command never appeared over MQTT at
+# all, so it may be a BLE-only "raw passthrough" replay rather than a
+# distinct main-light verb). It is a blind TOGGLE, not a set-on/set-off — the
+# app sends the identical bytes for both directions. Byte layout: 33 30 00
+# [16 zero bytes] 03 — 0x30 is an undocumented command type not in
+# docs/govee-protocol-reference.md's BLE command table; the trailing byte is
+# the XOR checksum over the preceding 19 bytes.
+#
+# Despite the confirmed-correct bytes, sending this exact payload from THIS
+# integration never had any physical effect, tried every way found in
+# docs/govee-protocol-reference.md: raw LAN UDP to the device (both via this
+# integration's LAN client and an independent raw send from a host on the
+# same VLAN, ruling out routing), and MQTT ptReal via BlePassthroughManager
+# with the envelope corrected to match the documented transaction-ID format
+# and to drop non-documented extra fields. The device acked "result: 1" for
+# every attempt regardless of whether it had a physical effect, so that ack
+# does not mean "executed" the way it seemed to at first. Root cause
+# undetermined — likely something at the session/auth layer a packet capture
+# of the real app's own outbound traffic would be needed to find. Main-light
+# independent control now goes through platforms/main_light.py's
+# BrightnessCommand-based approach instead — see that module's docstring.
+MAIN_LIGHT_TOGGLE_PTREAL_COMMAND: Final = "MzAAAAAAAAAAAAAAAAAAAAAAAAM="
 
-# SKUs where MAIN_LIGHT_LAN_TOGGLE_PTREAL_COMMAND is confirmed to work and
-# the integration replaces the plain master light entity (GoveeLightEntity)
-# with GoveeMainLightEntity + GoveeMainSegmentsGroupEntity instead — real
-# independent Main/Background control, built on top of the LAN write-only
-# device machinery (CONF_LAN_TARGETS' device_id=ip! form). Deliberately
-# narrow: only H1270 has actually been tested against real hardware, even
-# though H1250/H60A6 (the other confirmed-broken-cloud-toggle SKUs, issue
-# #131) are plausibly the same underlying fixture design.
-MAIN_LIGHT_LAN_TOGGLE_SKUS: Final = frozenset({"H1270"})
+# SKUs where GoveeLightEntity's powerSwitch=0 is confirmed to kill segments
+# too (not a per-zone switch) — the integration additionally creates
+# GoveeMainLightEntity, which drives just the main panel via
+# BrightnessCommand instead (see platforms/main_light.py). GoveeLightEntity
+# itself is still created for these SKUs — it remains the "everything off"
+# whole-device control. Deliberately narrow: only H1270 has actually been
+# tested against real hardware, even though H1250/H60A6 (the other
+# confirmed-broken-cloud-toggle SKUs, issue #131) are plausibly the same
+# underlying fixture design.
+MAIN_LIGHT_TOGGLE_SKUS: Final = frozenset({"H1270"})
 
 # BLE constants
 # Govee AWS/BLE advert manufacturer ID. Verified against
@@ -263,12 +275,10 @@ SUFFIX_SOCKET: Final = "_socket_"
 SUFFIX_MAIN_LIGHT: Final = "_main_light"
 # Distinct from SUFFIX_MAIN_LIGHT (the switch.ceiling_light_main_light
 # backed by the dead cloud mainLightToggle capability, suppressed on
-# MAIN_LIGHT_LAN_TOGGLE_SKUS) — this is the real, independently-working
-# light entity backed by the LAN ptReal toggle (issue #164 follow-up).
-SUFFIX_MAIN_LIGHT_LAN: Final = "_main_light_lan"
-# The light.ceiling_light_2-replacement convenience entity that groups the
-# LAN main light + the segments — mirrors SUFFIX_GROUPED_SEGMENT's role.
-SUFFIX_MAIN_SEGMENTS_GROUP: Final = "_main_segments_group"
+# MAIN_LIGHT_TOGGLE_SKUS) — this is the real, independently-working light
+# entity backed by BrightnessCommand (issue #164 follow-up). The "toggle" in
+# the name is a holdover from the parked ptReal approach it replaced.
+SUFFIX_MAIN_LIGHT_TOGGLE: Final = "_main_light_toggle"
 SUFFIX_BACKGROUND_LIGHT: Final = "_background_light"
 SUFFIX_NEBULA_LIGHT: Final = "_nebula_light"
 SUFFIX_SIDE_LIGHT: Final = "_side_light"

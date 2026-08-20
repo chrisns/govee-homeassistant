@@ -12,7 +12,7 @@ from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from ..const import MAIN_LIGHT_LAN_TOGGLE_SKUS
+from ..const import MAIN_LIGHT_TOGGLE_SKUS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -452,7 +452,7 @@ class GoveeDevice:
         instance names in capability order, minus ``backgroundLightToggle``
         on the confirmed-dead SKUs in ``BROKEN_BACKGROUND_LIGHT_TOGGLE_SKUS``
         (issue #131) — segments already control that zone on those SKUs —
-        and minus ``mainLightToggle`` on ``MAIN_LIGHT_LAN_TOGGLE_SKUS``
+        and minus ``mainLightToggle`` on ``MAIN_LIGHT_TOGGLE_SKUS``
         (issue #131/#164 follow-up), where ``light.py`` builds a real,
         independently-working ``GoveeMainLightEntity`` off the LAN ptReal
         toggle instead of a switch backed by the same dead cloud capability.
@@ -468,7 +468,7 @@ class GoveeDevice:
             )
             if not (
                 cap.instance == INSTANCE_MAIN_LIGHT_TOGGLE
-                and self.sku.upper() in MAIN_LIGHT_LAN_TOGGLE_SKUS
+                and self.sku.upper() in MAIN_LIGHT_TOGGLE_SKUS
             )
         ]
 

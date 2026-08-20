@@ -79,7 +79,7 @@ from .const import (
     LAN_WRITE_CONFIRM_TIMEOUT,
     LAN_WRITE_SUPPRESS_SECONDS,
     LAN_WRITE_SUPPRESS_THRESHOLD,
-    MAIN_LIGHT_LAN_TOGGLE_PTREAL_COMMAND,
+    MAIN_LIGHT_TOGGLE_PTREAL_COMMAND,
     MAX_WATER_DETECTOR_POLL_INTERVAL,
     MIN_WATER_DETECTOR_POLL_INTERVAL,
     OPTIMISTIC_GRACE_CAP_SECONDS,
@@ -820,31 +820,35 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         return device_id in self._pending_power_off
 
     async def async_send_main_light_toggle(self, device_id: str) -> bool:
-        """Send the reverse-engineered main-light LAN toggle (issue #164).
+        """UNUSED — parked (issue #131/#164 follow-up).
 
-        Only path that controls the Ceiling Light Pro's main downlight
-        independently of the ring/segments (MAIN_LIGHT_LAN_TOGGLE_SKUS) — the
-        cloud ``mainLightToggle``/``powerSwitch`` capabilities either never
-        work or drag the ring along with them. Requires LAN to be up for this
-        specific device (a ``device_id=ip[!]`` ``CONF_LAN_TARGETS`` entry);
-        with no LAN client or no correlated IP this is a no-op returning
-        ``False``, exactly like the other LAN write paths degrading to "not
-        available" rather than raising.
+        Sends the reverse-engineered main-light ptReal toggle
+        (MAIN_LIGHT_TOGGLE_PTREAL_COMMAND) via ``BlePassthroughManager``
+        over MQTT — the same plumbing used elsewhere in this integration for
+        music mode/DreamView/DIY scenes. The plumbing itself works (MQTT
+        publish confirmed via logs, device acks receipt), but sending this
+        specific command from this integration never had any physical
+        effect, despite the bytes being confirmed correct — captured twice,
+        live, byte-for-byte identical, from real Main Light button presses
+        in the official Govee app. See MAIN_LIGHT_TOGGLE_PTREAL_COMMAND's
+        comment in const.py for the full investigation. No caller currently
+        invokes this; main-light independent control instead goes through
+        ``light.py``'s ``GoveeMainLightEntity``, which drives the main panel
+        via plain ``BrightnessCommand`` (confirmed live to work reliably,
+        touching only the main panel).
 
-        It is a blind TOGGLE, not a set-on/set-off — callers are responsible
-        for only invoking this when a real state transition is wanted (their
-        own tracked optimistic state says a flip is needed), never on every
-        ``async_turn_on``/``async_turn_off`` unconditionally.
+        Kept rather than deleted: the reverse-engineered command IS correct,
+        and this plumbing may become useful again if a future investigation
+        (e.g. a packet capture of the app's real outbound MQTT session)
+        finds what actually differs between the app's session and ours.
         """
-        if self._lan_client is None:
+        device = self._devices.get(device_id)
+        if device is None:
             return False
-        info = self._lan_devices.get(device_id)
-        if info is None:
+        if not self._ble_manager.available:
             return False
-        return await self._lan_client.async_send_command(
-            info.ip,
-            "ptReal",
-            {"command": [MAIN_LIGHT_LAN_TOGGLE_PTREAL_COMMAND]},
+        return await self._ble_manager.async_send_ble_packet(
+            device_id, device.sku, MAIN_LIGHT_TOGGLE_PTREAL_COMMAND
         )
 
     # ------------------------------------------------------------------ #

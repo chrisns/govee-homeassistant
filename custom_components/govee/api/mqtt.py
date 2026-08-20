@@ -670,7 +670,12 @@ class GoveeAwsIotClient:
                 "cmd": cmd,
                 "data": data,
                 "cmdVersion": cmd_version,
-                "transaction": f"v_{int(time.time() * 1000)}",
+                # Real transaction IDs are a second-precision timestamp with 3
+                # trailing zeros (docs/govee-protocol-reference.md §3.6), e.g.
+                # "v_1704812400000" — not a genuine millisecond timestamp. The
+                # previous `int(time.time() * 1000)` produced a near-random
+                # last 3 digits instead (issue #164 investigation).
+                "transaction": f"v_{int(time.time()) * 1000}",
                 "type": 1,
             }
         }
@@ -717,12 +722,13 @@ class GoveeAwsIotClient:
         else:
             packets = ble_packet_base64
 
-        # ptReal data carries device targeting inside the data block.
-        data: dict[str, Any] = {
-            "command": packets,
-            "device": device_id,
-            "sku": sku,
-        }
+        # docs/govee-protocol-reference.md §3.5's captured ptReal example has
+        # ONLY "command" in data — no "device"/"sku". Targeting is implicit in
+        # which per-device GD/ topic we publish to. Dropped the extra fields
+        # (issue #164 investigation) since they don't match any captured real
+        # payload and may cause strict firmware-side schema parsing to reject
+        # the whole command while AWS IoT still acks the raw MQTT publish.
+        data: dict[str, Any] = {"command": packets}
         return await self.async_publish_command(device_topic, "ptReal", data)
 
     async def async_publish_gateway_ptreal(
