@@ -61,6 +61,7 @@ from .const import (
     KEY_IOT_LOGIN_FAILED,
     MAX_WATER_DETECTOR_POLL_INTERVAL,
     MIN_WATER_DETECTOR_POLL_INTERVAL,
+    SEGMENT_MODE_BOTH,
     SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
@@ -851,6 +852,7 @@ class GoveeOptionsFlow(OptionsFlow):
                             SEGMENT_MODE_DISABLED,
                             SEGMENT_MODE_GROUPED,
                             SEGMENT_MODE_INDIVIDUAL,
+                            SEGMENT_MODE_BOTH,
                         ]
                     ),
                 }

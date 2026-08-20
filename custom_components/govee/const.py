@@ -198,6 +198,12 @@ GOVEE_BLE_MANUFACTURER_IDS: Final = (0x8803,)  # 34819
 SEGMENT_MODE_DISABLED: Final = "disabled"
 SEGMENT_MODE_GROUPED: Final = "grouped"
 SEGMENT_MODE_INDIVIDUAL: Final = "individual"
+# Both the 12 individual segment entities AND one grouped entity that
+# controls all of them together — the individual entities stay the source of
+# truth per-segment; the grouped entity is a convenience "all segments" light
+# on top, not a replacement for either the individual entities or a native HA
+# Light Group helper (which needs no integration support at all).
+SEGMENT_MODE_BOTH: Final = "both"
 
 # Config entry schema version. Bumped to 2 in sprint-4 when IoT credentials
 # moved from hass.data[DOMAIN] to entry.data (see async_migrate_entry).
