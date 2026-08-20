@@ -462,6 +462,68 @@ def test_expand_lan_targets_rejects_garbage():
         lan.expand_lan_targets("not-an-ip")
 
 
+def test_expand_lan_targets_skips_device_overrides():
+    # A device_id=ip[!] override (#164) is not a scan target — expand_lan_targets
+    # must not try to parse it as an IP/subnet and must not raise on it.
+    raw = "10.20.0.5 11:66:C0:EB:32:C1:19:FC=192.168.3.210!"
+    assert lan.expand_lan_targets(raw) == ["10.20.0.5"]
+
+
+# --- parse_lan_device_overrides ---------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["", None, "   "])
+def test_parse_lan_device_overrides_empty(raw):
+    assert lan.parse_lan_device_overrides(raw) == {}
+
+
+def test_parse_lan_device_overrides_plain_ip():
+    # No trailing "!" -> normal read/write/health treatment, not write-only.
+    raw = "11:66:C0:EB:32:C1:19:FC=192.168.3.210"
+    assert lan.parse_lan_device_overrides(raw) == {
+        "11:66:C0:EB:32:C1:19:FC": ("192.168.3.210", False),
+    }
+
+
+def test_parse_lan_device_overrides_write_only_marker():
+    raw = "11:66:C0:EB:32:C1:19:FC=192.168.3.210!"
+    assert lan.parse_lan_device_overrides(raw) == {
+        "11:66:C0:EB:32:C1:19:FC": ("192.168.3.210", True),
+    }
+
+
+def test_parse_lan_device_overrides_multiple_and_mixed_with_plain_targets():
+    raw = "10.20.0.5, AA:BB=10.20.0.6!, CC:DD=10.20.0.7"
+    assert lan.parse_lan_device_overrides(raw) == {
+        "AA:BB": ("10.20.0.6", True),
+        "CC:DD": ("10.20.0.7", False),
+    }
+    # And the plain IP is still picked up by expand_lan_targets, unaffected.
+    assert lan.expand_lan_targets(raw) == ["10.20.0.5"]
+
+
+def test_parse_lan_device_overrides_later_duplicate_wins():
+    raw = "AA:BB=10.20.0.6 AA:BB=10.20.0.9!"
+    assert lan.parse_lan_device_overrides(raw) == {"AA:BB": ("10.20.0.9", True)}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "=192.168.3.210",  # empty device_id
+        "AA:BB=",  # empty ip
+        "AA:BB=!",  # empty ip, just the marker
+        "AA:BB=not-an-ip",  # invalid ip
+        "AA:BB=not-an-ip!",  # invalid ip, write-only marker
+    ],
+)
+def test_parse_lan_device_overrides_skips_malformed_entries(raw):
+    # Malformed entries are skipped silently, never raised — a bad token must
+    # never abort the rest of parsing (matches expand_lan_targets' contract
+    # for its own errors, but overrides never raise at all).
+    assert lan.parse_lan_device_overrides(raw) == {}
+
+
 # --- async_get_lan_interface_ips -------------------------------------------
 #
 # The single shared interface-IP enumeration hoisted out of diagnostics (#57) so

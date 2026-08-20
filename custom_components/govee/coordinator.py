@@ -56,6 +56,7 @@ from .api.lan import (
     async_get_lan_interface_ips,
     async_scan_lan_devices,
     expand_lan_targets,
+    parse_lan_device_overrides,
 )
 from .api.lan_client import (
     GoveeLanClient,
@@ -398,6 +399,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._lan_client: GoveeLanClient | None = None
         # Correlated LAN devices keyed by coordinator device_id.
         self._lan_devices: dict[str, LanDeviceInfo] = {}
+        # device_ids bound via a manual write-only CONF_LAN_TARGETS override
+        # (issue #164) — firmware that accepts LAN writes but never answers a
+        # devStatus read, even from its own subnet (not a VLAN artifact — a
+        # scan reply not crossing VLANs is the separate, non-write-only case
+        # the bare device_id=ip form of the same override already covers).
+        # The read-health gate and write-confirm readback are skipped for
+        # these; the periodic LAN read poll excludes them too so they are
+        # never miss-demoted back out of _lan_devices.
+        self._lan_write_only: set[str] = set()
         # Scan records that matched no device_id (counted for diagnostics).
         self._lan_unmatched: list[Mapping[str, Any]] = []
         # Consecutive solicited-read misses per device, for demotion (LAN-011).
@@ -936,6 +946,49 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # the socket opens stops the client before propagating (#57, blocking #5).
         await self._async_setup_lan()
 
+    def _resolve_lan_overrides(self) -> dict[str, LanDeviceInfo]:
+        """Manual ``device_id=ip[!]`` overrides from ``CONF_LAN_TARGETS`` (#164).
+
+        Bypasses scan/devStatus discovery for a device pinned this way,
+        binding it straight to the given IP. Also (re)populates
+        :attr:`_lan_write_only` from any ``!``-suffixed entries — called once
+        per setup/rescan cycle, so it is the single source of truth for which
+        devices are write-only at any given moment (a user can remove the
+        ``!`` and a later rescan un-marks the device).
+
+        An override naming a ``device_id`` this account doesn't have (typo,
+        removed device) is skipped with a debug log rather than raising —
+        the same "one bad entry never blocks the rest" contract as
+        ``expand_lan_targets``.
+        """
+        raw_targets = self._config_entry.options.get(CONF_LAN_TARGETS, "")
+        overrides = parse_lan_device_overrides(
+            raw_targets if isinstance(raw_targets, str) else ""
+        )
+        now = time.monotonic()
+        resolved: dict[str, LanDeviceInfo] = {}
+        self._lan_write_only = set()
+        for device_id, (ip, write_only) in overrides.items():
+            device = self._devices.get(device_id)
+            if device is None:
+                _LOGGER.debug(
+                    "Ignoring %s override for unknown device_id %r",
+                    CONF_LAN_TARGETS,
+                    device_id,
+                )
+                continue
+            resolved[device_id] = LanDeviceInfo(
+                device_id=device_id,
+                ip=ip,
+                mac=device_id,
+                sku=device.sku,
+                firmware="",
+                last_correlated_ts=now,
+            )
+            if write_only:
+                self._lan_write_only.add(device_id)
+        return resolved
+
     async def _async_setup_lan(self) -> None:
         """Set up the LAN (UDP) transport — the LAST step of coordinator setup.
 
@@ -1014,10 +1067,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             matched, unmatched = correlate_scan(
                 scan, set(self._devices), time.monotonic()
             )
+            # Manual device_id=ip[!] overrides (#164) fill in devices scan
+            # correlation can never reach on a segmented network — its reply
+            # is multicast and can't cross the VLAN boundary back to us. A
+            # fresh scan match still wins over a possibly-stale manual entry.
+            for device_id, info in self._resolve_lan_overrides().items():
+                matched.setdefault(device_id, info)
             if not matched:
                 # Auto-enable gate not met: the scan answered but nothing
-                # correlated to a device_id. Don't hold sockets for nothing —
-                # stop the client and stay disabled.
+                # correlated to a device_id, and no override filled the gap.
+                # Don't hold sockets for nothing — stop the client and stay
+                # disabled.
                 _LOGGER.debug(
                     "Govee LAN: scan answered but no device correlated "
                     "(%d unmatched) — LAN disabled",
@@ -1231,7 +1291,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         ip_to_device = {
             info.ip: device_id
             for device_id, info in self._lan_devices.items()
-            if info.ip
+            # Write-only devices (#164) never answer a read — polling them
+            # would just accumulate misses and demote them straight back out
+            # of _lan_devices every LAN_READ_MISS_DEMOTE_THRESHOLD cycles.
+            if info.ip and device_id not in self._lan_write_only
         }
         if not ip_to_device:
             return
@@ -1302,6 +1365,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return
 
         matched, unmatched = correlate_scan(scan, set(self._devices), now)
+        # Re-apply manual overrides each rescan too (#164) — a fresh scan
+        # match still wins for any device_id it actually found.
+        for device_id, info in self._resolve_lan_overrides().items():
+            matched.setdefault(device_id, info)
         self._merge_lan_correlation(matched, unmatched)
 
     def _merge_lan_correlation(
@@ -3116,9 +3183,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         #     read yet (TransportHealth defaults is_available=False, so the
         #     FIRST control after startup falls through HERE until the first LAN
         #     read marks it available) — must fall back to MQTT/REST.
-        health = self._transport.get(device_id, "lan")
-        if health is None or not health.is_available:
-            return False
+        #
+        #     Skipped for a write-only override (#164): that device has never
+        #     answered a read and never will, so this gate could never pass —
+        #     the user's explicit ``device_id=ip!`` override is what stands in
+        #     for read-proven health here.
+        if device_id not in self._lan_write_only:
+            health = self._transport.get(device_id, "lan")
+            if health is None or not health.is_available:
+                return False
 
         # [4.5] Write-suppression cooldown (issue #57): this device's recent LAN
         #     writes did not confirm, so skip the LAN write attempt AND its
@@ -3153,6 +3226,26 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         #     confirm read blocks for up to LAN_WRITE_CONFIRM_TIMEOUT.
         self._apply_optimistic_update(device_id, command)
         self.async_set_updated_data(self._states)
+
+        # [7.5] Write-only override (#164): this device has never answered a
+        #     read, so waiting on one here would just burn LAN_WRITE_CONFIRM_
+        #     TIMEOUT for a reply that will never come, and — worse — count as
+        #     a write-confirm miss every single time, eventually tripping
+        #     write suppression on a device that is, in fact, working exactly
+        #     as its firmware allows. Treat the successful send itself as the
+        #     confirmation: it is the only signal this firmware ever gives.
+        if device_id in self._lan_write_only:
+            self._record_transport_send(device_id, "lan")
+            self._record_transport_success(device_id, "lan")
+            self._record_local_command(
+                device_id,
+                device.sku,
+                "lan",
+                command,
+                delivered=True,
+                detail="write-only device (#164) — send is the only confirmation available",
+            )
+            return True
 
         # [8] Verify-by-read: a LAN write is unacked, so read the device back and
         #     require the reported value to match what we sent.

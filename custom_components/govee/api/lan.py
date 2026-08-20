@@ -137,6 +137,8 @@ def expand_lan_targets(raw: str | None) -> list[str]:
     - a CIDR subnet (``10.20.0.0/24``)    -> every host address plus the subnet
       broadcast, so cross-VLAN devices are reached by unicast sweep (inter-VLAN
       firewalls usually drop a single directed broadcast)
+    - a ``device_id=ip`` override (see :func:`parse_lan_device_overrides`) —
+      skipped here, not a scan target
 
     Returns a de-duplicated, order-preserving list of IPv4 address strings.
     Raises ``LanTargetError`` on an unparseable token or a subnet wider than
@@ -154,6 +156,8 @@ def expand_lan_targets(raw: str | None) -> list[str]:
             targets.append(address)
 
     for token in raw.replace(",", " ").split():
+        if "=" in token:
+            continue  # a device_id=ip override — handled by the caller
         try:
             if "/" in token:
                 network = IPv4Network(token, strict=False)
@@ -174,6 +178,53 @@ def expand_lan_targets(raw: str | None) -> list[str]:
             raise LanTargetError(f"'{token}' is not a valid IP or subnet") from err
 
     return targets
+
+
+def parse_lan_device_overrides(raw: str | None) -> dict[str, tuple[str, bool]]:
+    """Parse ``device_id=ip[!]`` overrides out of the LAN-targets free text.
+
+    A cross-VLAN target (:func:`expand_lan_targets`) only fixes *reaching* a
+    device with the unicast ``scan`` request — correlation still needs that
+    device's *reply*, which is multicast and so never crosses the VLAN
+    boundary back to us regardless of firmware. A bare ``device_id=ip`` token
+    routes around that structural limit: it binds the coordinator's known
+    ``device_id`` straight to an IP, skipping discovery entirely.
+
+    A trailing ``!`` (``device_id=ip!``) is for a further, firmware-specific
+    case (issue #164): some devices never answer ``devStatus`` either, even
+    from their own subnet — a genuine silence, not a VLAN artifact. The ``!``
+    marks the device *write-only*, telling the caller to skip the read-health
+    gate and write-confirm readback, since a device that never answers a read
+    can never satisfy either.
+
+    Malformed or duplicate tokens never raise: a later duplicate device_id
+    wins, and a bad token (no ``=``, empty device_id/ip, invalid ip) is
+    skipped silently, same contract as :func:`expand_lan_targets`'s errors.
+
+    Returns ``{device_id: (ip, write_only)}``. The caller must still validate
+    each ``device_id`` against its known devices — this function can't.
+    """
+    overrides: dict[str, tuple[str, bool]] = {}
+    if not raw:
+        return overrides
+
+    for token in raw.replace(",", " ").split():
+        if "=" not in token:
+            continue
+        device_id, _, value = token.partition("=")
+        device_id = device_id.strip()
+        write_only = value.endswith("!")
+        ip = value[:-1] if write_only else value
+        ip = ip.strip()
+        if not device_id or not ip:
+            continue
+        try:
+            IPv4Address(ip)
+        except (AddressValueError, ValueError):
+            continue
+        overrides[device_id] = (ip, write_only)
+
+    return overrides
 
 
 async def async_get_lan_interface_ips(hass: HomeAssistant) -> list[str]:

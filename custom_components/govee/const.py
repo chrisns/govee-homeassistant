@@ -29,6 +29,12 @@ CONF_WATER_DETECTOR_POLL_INTERVAL: Final = "water_detector_poll_interval"
 # Free-text list (comma / newline / space separated) of device IPs, broadcast
 # addresses, and CIDR subnets (≤ /24, unicast-swept since inter-VLAN firewalls
 # usually drop directed broadcast). Empty = local multicast scan only.
+#
+# Also accepts ``device_id=ip`` (skip discovery, bind that device straight to
+# an IP) and ``device_id=ip!`` (same, plus mark it write-only: skip the
+# read-health gate and write-confirm readback for firmware that accepts LAN
+# writes but never answers a scan or devStatus read — issue #164). See
+# ``api.lan.parse_lan_device_overrides``.
 CONF_LAN_TARGETS: Final = "lan_targets"
 
 # Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via
