@@ -312,6 +312,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # avoid racing with a concurrent device power-off (issue #16).
         self._pending_power_off: set[str] = set()
 
+        # Last colour written to each device's segments, per segment index
+        # ({device_id: {segment_index: (r, g, b)}}). On Ceiling Light Pro
+        # fixtures the whole-device colour/CCT/brightness channel drives the
+        # ENTIRE fixture, clobbering the segment overlay, so any write to that
+        # channel has to re-assert the segments afterwards to keep the ring
+        # where the user left it (issue #131/#164). See
+        # ``async_reassert_segments`` and ``platforms/main_light.py``.
+        self._segment_colors: dict[str, dict[int, tuple[int, int, int]]] = {}
+
         # Track rate limit state to avoid spamming repair issues
         self._rate_limited: bool = False
 
@@ -818,6 +827,45 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         Segment entities use this to avoid racing with a concurrent power-off.
         """
         return device_id in self._pending_power_off
+
+    def tracked_segment_colors(
+        self, device_id: str
+    ) -> dict[int, tuple[int, int, int]]:
+        """Return the last colour written to each of a device's segments."""
+        return dict(self._segment_colors.get(device_id, {}))
+
+    async def async_reassert_segments(self, device_id: str) -> None:
+        """Re-send the segments' last known colours after a whole-device write.
+
+        On Ceiling Light Pro fixtures (MAIN_LIGHT_TOGGLE_SKUS) the whole-device
+        colour/CCT/brightness channel drives the ENTIRE fixture — main panel
+        AND ring — so it wipes the ``segmentedColorRgb`` overlay that the ring
+        actually uses. Confirmed live on an H1270: setting a colour temperature
+        while the ring was red turned the ring warm-white too. Replaying the
+        tracked segment colours immediately afterwards puts the ring back
+        without disturbing the main panel, which is what makes the two zones
+        independently controllable at all (issue #131/#164).
+
+        Segments are grouped by colour so a uniform ring costs a single call
+        rather than one per segment. No-op when nothing has been tracked yet.
+        """
+        tracked = self._segment_colors.get(device_id)
+        if not tracked:
+            return
+
+        by_color: dict[tuple[int, int, int], list[int]] = {}
+        for index, rgb in tracked.items():
+            by_color.setdefault(rgb, []).append(index)
+
+        for rgb, indices in by_color.items():
+            r, g, b = rgb
+            await self.async_control_device(
+                device_id,
+                SegmentColorCommand(
+                    segment_indices=tuple(sorted(indices)),
+                    color=RGBColor(r=r, g=g, b=b),
+                ),
+            )
 
     async def async_send_main_light_toggle(self, device_id: str) -> bool:
         """UNUSED — parked (issue #131/#164 follow-up).
@@ -2957,6 +3005,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         is_power_off = isinstance(command, PowerCommand) and not command.power_on
         if is_power_off:
             self._pending_power_off.add(device_id)
+
+        # Remember what the segments were last set to, before the first await,
+        # so a concurrent whole-device write can faithfully restore them.
+        # Recorded here (rather than in the REST branch) so it captures the
+        # command whichever transport tier ends up carrying it.
+        if isinstance(command, SegmentColorCommand):
+            tracked = self._segment_colors.setdefault(device_id, {})
+            rgb = command.color.as_tuple
+            for index in command.segment_indices:
+                tracked[index] = rgb
 
         try:
             # BLE-first dispatch: if a BLE transport is available for this

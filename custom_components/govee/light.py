@@ -87,13 +87,13 @@ async def async_setup_entry(
         if device.is_light_device and device.supports_power:
             entities.append(GoveeLightEntity(coordinator, device, enable_scenes))
             if device.sku.upper() in MAIN_LIGHT_TOGGLE_SKUS:
-                # ``light.ceiling_light_2`` above stays as the whole-device
-                # control (powerSwitch=0 turns off segments too — confirmed
-                # live, not a per-zone switch). This second entity drives
-                # JUST the main panel via BrightnessCommand (dim to device
-                # minimum = "off"), confirmed live to leave segments alone —
-                # see platforms/main_light.py for why not powerSwitch or the
-                # reverse-engineered ptReal toggle (issue #131/#164).
+                # ``light.ceiling_light_2`` above stays as the whole-fixture
+                # control — powerSwitch is all-or-nothing and kills the ring
+                # too (confirmed live). This second entity drives JUST the
+                # main downlight panel, switching it off by writing black to
+                # the whole-device colour channel rather than powerSwitch, so
+                # the ring can stay lit. See platforms/main_light.py for the
+                # full mechanism (issue #131/#164).
                 entities.append(GoveeMainLightEntity(coordinator, device))
 
         # Appliances whose only light is the nightlight (e.g. H5089 outlet
